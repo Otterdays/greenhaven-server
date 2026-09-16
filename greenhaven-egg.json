@@ -1,0 +1,67 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PANEL - Greenhaven world server egg, Pelican PLCN_v1 export. Strategy A: prebuilt musl-static binary downloaded from a release URL. Nothing is compiled on the node. Guide: server-architecture/PELICAN-EGG.md, contract: server-architecture/HOST-AGENT-HANDOVER.md",
+    "meta": {
+        "version": "PLCN_v1",
+        "update_url": null
+    },
+    "exported_at": "2026-09-16T00:00:00+00:00",
+    "name": "Greenhaven World Server",
+    "author": "otterdays",
+    "uuid": "707c2a14-c692-4a3f-a404-cff1041bf45a",
+    "description": "Greenhaven MMORPG world server (rpg-server, Rust/Axum WebSocket): one prebuilt, fully static Linux x86_64 binary. Nothing is compiled on this node and no credentials are needed - the installer downloads the release asset and verifies its SHA-256 before installing it. ONE TCP port only (WebSocket /ws and HTTP /health share it); no UDP, no query port. No config files: every setting is an environment variable, so change them as egg variables, not as files. The only value an operator must fill is RELEASE_BASE, the release download prefix. The save is data/world.sqlite plus its -wal and -shm sidecars under /home/container/data and survives reinstall. Boot detection matches the line 'world listening on ws://'. The map JSON is required at boot and is shipped in the release; the database is created on first boot if absent. Guide: server-architecture/PELICAN-EGG.md.",
+    "tags": [
+        "greenhaven",
+        "rust"
+    ],
+    "features": null,
+    "docker_images": {
+        "ghcr.io/pelican-eggs/yolks:debian": "ghcr.io/pelican-eggs/yolks:debian"
+    },
+    "file_denylist": [
+        "data/world.sqlite",
+        "data/world.sqlite-wal",
+        "data/world.sqlite-shm"
+    ],
+    "startup": "export RPG_BIND=0.0.0.0:{{SERVER_PORT}} RPG_MAP=assets/maps/greenhaven.json RPG_DB=data/world.sqlite; exec ./greenhaven-server",
+    "config": {
+        "files": "{}",
+        "startup": "{\"done\": \"world listening on ws://\"}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Greenhaven world install: prebuilt static binary, no toolchain on this node.\n# Safe to re-run: it replaces the binary and the map and never touches data/.\nset -e\ncd /mnt/server\nif [ -z \"${RELEASE_BASE}\" ]; then\n  echo \"RELEASE_BASE is not set. Set it to the release download prefix, for example https://github.com/<owner>/<releases-repo>/releases/download/v0.1.0\"\n  exit 1\nfi\nBIN_ASSET=\"greenhaven-server-x86_64-unknown-linux-musl\"\nMAP_ASSET=\"greenhaven.json\"\nfetch() {\n  if command -v curl >/dev/null 2>&1; then curl -fsSL \"$1\" -o \"$2\";\n  elif command -v wget >/dev/null 2>&1; then wget -qO \"$2\" \"$1\";\n  else echo \"neither curl nor wget is present in this install image\"; exit 1; fi\n}\nmkdir -p data assets/maps\ntmp=\"$(mktemp -d)\"\necho \"Fetching ${RELEASE_BASE}/${BIN_ASSET} ...\"\nfetch \"${RELEASE_BASE}/${BIN_ASSET}\" \"${tmp}/${BIN_ASSET}\"\necho \"Verifying the SHA-256 ...\"\nfetch \"${RELEASE_BASE}/${BIN_ASSET}.sha256\" \"${tmp}/sum\"\nexpected=\"$(awk '{print $1}' \"${tmp}/sum\")\"\nactual=\"$(sha256sum \"${tmp}/${BIN_ASSET}\" | awk '{print $1}')\"\nif [ -z \"${expected}\" ]; then echo \"the checksum file is empty - a release must publish ${BIN_ASSET}.sha256\"; exit 1; fi\nif [ \"${expected}\" != \"${actual}\" ]; then echo \"checksum mismatch: expected ${expected}, got ${actual}\"; exit 1; fi\nmv \"${tmp}/${BIN_ASSET}\" greenhaven-server\nchmod +x greenhaven-server\necho \"Fetching ${RELEASE_BASE}/${MAP_ASSET} ...\"\nfetch \"${RELEASE_BASE}/${MAP_ASSET}\" assets/maps/greenhaven.json\ntest -s assets/maps/greenhaven.json || { echo \"the map download is empty\"; exit 1; }\nrm -rf \"${tmp}\"\ntest -x greenhaven-server || { echo \"no executable was installed\"; exit 1; }\n# The binary takes no CLI flags: never execute it here, it would bind a port.\necho \"Install complete. The map is validated on boot; a damaged map stops the boot rather than the world.\"\nexit 0",
+            "container": "ghcr.io/pelican-eggs/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Release download base",
+            "description": "PLACEHOLDER until the first release is published. The installer fetches <RELEASE_BASE>/greenhaven-server-x86_64-unknown-linux-musl, its .sha256, and <RELEASE_BASE>/greenhaven.json. To update the world, bump this string to the newer release and reinstall. Admin-only.",
+            "env_variable": "RELEASE_BASE",
+            "default_value": "https://github.com/Otterdays/greenhaven-server/releases/download/v0.1.0",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "string"
+            ],
+            "sort": 1
+        },
+        {
+            "name": "Debug world endpoint",
+            "description": "1 exposes /debug/world (live atlas dump). Leave 0 on a public host: it is off by default on a non-loopback bind. Admin-only: changing this needs a server restart.",
+            "env_variable": "RPG_DEBUG",
+            "default_value": "0",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "boolean"
+            ],
+            "sort": 2
+        }
+    ]
+}
