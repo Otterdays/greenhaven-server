@@ -41,6 +41,7 @@ A Pelican/Wings egg fetches these three assets from one base URL (`RELEASE_BASE`
 
 ## Notes
 
-- Tags are `vX.Y.Z`, matching the server crate version. Latest: `v0.1.0`.
+- Tags are `vX.Y.Z`, matching the server crate version. Latest: `v0.1.6`.
 - A new version is a new tag. An uploaded asset is never overwritten.
 - Artifacts only. Source, issues and design docs live in the private development repository.
+- The Pelican egg JSON (`greenhaven-egg.json`) is also hosted here for panel import.
