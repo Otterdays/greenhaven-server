@@ -8,7 +8,7 @@
     "name": "Greenhaven World Server",
     "author": "otterdays",
     "uuid": "707c2a14-c692-4a3f-a404-cff1041bf45a",
-    "description": "Greenhaven MMORPG world server (rpg-server, Rust/Axum WebSocket): one prebuilt, fully static Linux x86_64 binary. Nothing is compiled on this node and no credentials are needed - the installer downloads the release asset and verifies its SHA-256 before installing it. ONE TCP port only (WebSocket /ws and HTTP /health share it); no UDP, no query port. No config files: every setting is an environment variable, so change them as egg variables, not as files. The only value an operator must fill is RELEASE_BASE, the release download prefix. The save is data/world.sqlite plus its -wal and -shm sidecars under /home/container/data and survives reinstall. Boot detection matches the line 'world listening on ws://'. The map JSON is required at boot and is shipped in the release; the database is created on first boot if absent. Guide: server-architecture/PELICAN-EGG.md.",
+    "description": "Greenhaven MMORPG world server (rpg-server, Rust/Axum WebSocket): one prebuilt, fully static Linux x86_64 binary. Nothing is compiled on this node and no credentials are needed - the installer downloads the release asset and verifies its SHA-256 before installing it. ONE TCP port only (WebSocket /ws and HTTP /health share it); no UDP, no query port. No config files: every setting is an environment variable, so change them as egg variables, not as files. Player data is stored in a shared PostgreSQL database (RPG_DB), so multiple world servers can share character data. Each server needs a unique RPG_WORLD_ID. Boot detection matches the line 'world listening on ws://'. Guide: server-architecture/PELICAN-EGG.md.",
     "tags": [
         "greenhaven",
         "rust"
@@ -17,12 +17,8 @@
     "docker_images": {
         "ghcr.io/pelican-eggs/yolks:debian": "ghcr.io/pelican-eggs/yolks:debian"
     },
-    "file_denylist": [
-        "data/world.sqlite",
-        "data/world.sqlite-wal",
-        "data/world.sqlite-shm"
-    ],
-    "startup": "export RPG_BIND=0.0.0.0:{{SERVER_PORT}} RPG_MAP=assets/maps/greenhaven.json RPG_DB=data/world.sqlite; exec ./greenhaven-server",
+    "file_denylist": [],
+    "startup": "export RPG_BIND=0.0.0.0:{{SERVER_PORT}} RPG_MAP=assets/maps/greenhaven.json RPG_DB={{RPG_DB}} RPG_WORLD_ID={{RPG_WORLD_ID}} RPG_TICK_HZ={{RPG_TICK_HZ}} ADMIN_API_TOKEN={{ADMIN_API_TOKEN}} RPG_ADMIN_BIND={{RPG_ADMIN_BIND}}; exec ./greenhaven-server",
     "config": {
         "files": "{}",
         "startup": "{\"done\": \"world listening on ws://\"}",
@@ -39,9 +35,9 @@
     "variables": [
         {
             "name": "Release download base",
-            "description": "Release download prefix (base URL). Currently the published v0.1.6 release. The installer fetches <RELEASE_BASE>/greenhaven-server-x86_64-unknown-linux-musl, its .sha256, and <RELEASE_BASE>/greenhaven.json. To update the world, bump this string to the newer release and reinstall. On success the installer also writes greenhaven-release.txt next to the binary, which the server prints at boot as `Installed release` beside the `Requested release` it reads from this variable; a mismatch means the server was not reinstalled. Admin-only.",
+            "description": "Release download prefix (base URL). The installer fetches <RELEASE_BASE>/greenhaven-server-x86_64-unknown-linux-musl, its .sha256, and <RELEASE_BASE>/greenhaven.json. To update the world, bump this string to the newer release and reinstall. Admin-only.",
             "env_variable": "RELEASE_BASE",
-            "default_value": "https://github.com/Otterdays/greenhaven-server/releases/download/v0.1.7",
+            "default_value": "https://github.com/Otterdays/greenhaven-server/releases/download/v0.1.9",
             "user_viewable": false,
             "user_editable": false,
             "rules": [
@@ -51,8 +47,47 @@
             "sort": 1
         },
         {
+            "name": "PostgreSQL connection URL",
+            "description": "PostgreSQL connection string shared by all world servers (e.g. postgres://user:pass@host:5432/greenhaven). All player data is stored here. Admin-only, secret.",
+            "env_variable": "RPG_DB",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "string"
+            ],
+            "sort": 2
+        },
+        {
+            "name": "World ID",
+            "description": "Unique identifier for this world server (e.g. world_1, world_2). Each server from the same egg must have a different value. Used for crash recovery and resource node scoping. Admin-only.",
+            "env_variable": "RPG_WORLD_ID",
+            "default_value": "world_1",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "string"
+            ],
+            "sort": 3
+        },
+        {
+            "name": "Tick rate",
+            "description": "Simulation tick rate in Hz for this world. Default 20. Higher values mean smoother simulation but more CPU. Admin-only.",
+            "env_variable": "RPG_TICK_HZ",
+            "default_value": "20",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "numeric"
+            ],
+            "sort": 4
+        },
+        {
             "name": "Debug world endpoint",
-            "description": "1 exposes /debug/world (live atlas dump). Leave 0 on a public host: it is off by default on a non-loopback bind. Admin-only: changing this needs a server restart.",
+            "description": "1 exposes /debug/world (live Atlas dump). Leave 0 on a public host. Admin-only.",
             "env_variable": "RPG_DEBUG",
             "default_value": "0",
             "user_viewable": false,
@@ -61,7 +96,33 @@
                 "required",
                 "boolean"
             ],
-            "sort": 2
+            "sort": 5
+        },
+        {
+            "name": "Admin API token",
+            "description": "Enables the token-gated admin API (bans, kicks, audit). Leave blank to keep it off. Use the SAME token on every world so one admin tool reaches all of them. The API binds 127.0.0.1:<port+1000> inside the container - internal only. Admin-only, secret.",
+            "env_variable": "ADMIN_API_TOKEN",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": [
+                "nullable",
+                "string"
+            ],
+            "sort": 6
+        },
+        {
+            "name": "Admin API bind override",
+            "description": "Overrides where the admin API listens. Leave blank to use the default (127.0.0.1:<game port + 1000>, internal only). Only set this if that default collides with something else in the container. Admin-only.",
+            "env_variable": "RPG_ADMIN_BIND",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": [
+                "nullable",
+                "string"
+            ],
+            "sort": 7
         }
     ]
 }
