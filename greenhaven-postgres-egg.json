@@ -1,0 +1,139 @@
+{
+    "_comment": "Greenhaven shared PostgreSQL egg, Pelican PLCN_v1. One of these per panel; every Greenhaven world server points its RPG_DB at it. Pair: server-architecture/greenhaven-egg.json.",
+    "meta": {
+        "version": "PLCN_v1",
+        "update_url": null
+    },
+    "exported_at": "2026-09-17T00:00:00+00:00",
+    "name": "Greenhaven PostgreSQL",
+    "author": "otterdays",
+    "uuid": "3f1c9b2e-7d84-4c61-9a0e-5b2d8e4f6a17",
+    "description": "Shared PostgreSQL for the Greenhaven world servers. ONE TCP port (allocate it on the node's PRIVATE IP, never the public one). pg_hba only accepts password logins from 10/8, 172.16/12 and 192.168/16, so a public allocation is refused anyway. Data lives in data/ and survives reinstall. A pg_dump runs every BACKUP_HOURS into backups/ - the panel's volume backup is not a consistent database copy. Start this server BEFORE any world server; worlds crash on boot without it. Connection string for each world: postgres://<user>:<password>@<node-internal-ip>:<port>/<db>.",
+    "tags": [
+        "greenhaven",
+        "database",
+        "postgres"
+    ],
+    "features": null,
+    "docker_images": {
+        "PostgreSQL 16": "ghcr.io/pelican-eggs/yolks:postgres_16",
+        "PostgreSQL 14": "ghcr.io/pelican-eggs/yolks:postgres_14"
+    },
+    "file_denylist": [
+        "data/pg_hba.conf",
+        "data/postgresql.conf"
+    ],
+    "startup": "./start.sh",
+    "config": {
+        "files": "{}",
+        "startup": "{\"done\": \"database system is ready to accept connections\"}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Greenhaven shared PostgreSQL install. Runs as root in the official postgres image.\n# Safe to re-run: an existing cluster in data/ is kept untouched (your saves survive reinstall).\nset -e\ncd /mnt/server\nmkdir -p data backups\n: \"${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (long random string)}\"\n: \"${POSTGRES_USER:=game_user}\"\n: \"${POSTGRES_DB:=game_db}\"\nchown postgres:postgres data backups\nif [ -s data/PG_VERSION ]; then\n  echo \"Existing cluster found in data/ (PG $(cat data/PG_VERSION)). Keeping it; saves survive reinstall.\"\nelse\n  pw=\"$(mktemp)\"; printf '%s' \"${POSTGRES_PASSWORD}\" > \"$pw\"; chown postgres \"$pw\"\n  echo \"initdb (${POSTGRES_USER} is the superuser of this cluster) ...\"\n  su postgres -c \"initdb -D /mnt/server/data -U '${POSTGRES_USER}' --pwfile='$pw' --auth=scram-sha-256 -E UTF8 --locale=C.UTF-8\"\n  rm -f \"$pw\"\nfi\n# Install-phase auth: the socket-only server below is reachable by nobody but this script, so the\n# socket is trusted here. Password-only rules replace this before the server is ever exposed. Without\n# this, createdb would wait for a password on a TTY the installer does not have and hang forever.\necho 'local   all   all   trust' > data/pg_hba.conf\nchown postgres data/pg_hba.conf\nsu postgres -c \"pg_ctl -D /mnt/server/data -o \\\"-c listen_addresses='' -k /tmp\\\" -w start\"\nif su postgres -c \"psql -w -h /tmp -U '${POSTGRES_USER}' -d postgres -Atc \\\"SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB}'\\\"\" | grep -q 1; then\n  echo \"Database ${POSTGRES_DB} already exists.\"\nelse\n  echo \"Creating database ${POSTGRES_DB} ...\"\n  su postgres -c \"createdb -w -h /tmp -U '${POSTGRES_USER}' '${POSTGRES_DB}'\"\nfi\nsu postgres -c \"pg_ctl -D /mnt/server/data -w stop\"\n# Only the node's private networks may connect, and only with a password. Docker NAT makes every\n# world-server container show up from a 172.x/10.x/192.168.x source, never from the public internet.\ncat > data/pg_hba.conf <<'HBA'\nlocal   all   all                    scram-sha-256\nhost    all   all   127.0.0.1/32     scram-sha-256\nhost    all   all   ::1/128          scram-sha-256\nhost    all   all   10.0.0.0/8       scram-sha-256\nhost    all   all   172.16.0.0/12    scram-sha-256\nhost    all   all   192.168.0.0/16   scram-sha-256\nHBA\nchown postgres data/pg_hba.conf\n# Runtime wrapper: postgres in the foreground, a pg_dump loop beside it. The panel's Backups tab\n# only tars the volume, which is not a consistent Postgres copy; the dumps in backups/ are.\ncat > start.sh <<'RUN'\n#!/bin/bash\ncd /home/container\nPORT=\"${SERVER_PORT:-5432}\"\nbackup_loop() {\n  export PGPASSWORD=\"${POSTGRES_PASSWORD}\"\n  while true; do\n    sleep \"$(( ${BACKUP_HOURS:-6} * 3600 ))\"\n    f=\"backups/${POSTGRES_DB}_$(date +%F_%H%M).sql.gz\"\n    if pg_dump -h /tmp -p \"$PORT\" -U \"$POSTGRES_USER\" \"$POSTGRES_DB\" | gzip > \"$f\"; then\n      echo \"[backup] wrote $f\"\n      ls -1t backups/*.sql.gz 2>/dev/null | tail -n +\"$(( ${BACKUP_KEEP:-28} + 1 ))\" | xargs -r rm -f\n    else\n      echo \"[backup] FAILED\"; rm -f \"$f\"\n    fi\n  done\n}\npostgres -D /home/container/data -p \"$PORT\" -k /tmp \\\n  -c listen_addresses='*' -c max_connections=\"${MAX_CONNECTIONS:-100}\" \\\n  -c shared_buffers=\"${SHARED_BUFFERS:-128MB}\" -c log_min_messages=warning &\nPG=$!\nif [ \"${BACKUP_HOURS:-6}\" != \"0\" ]; then backup_loop & BK=$!; fi\ntrap 'kill -INT $PG 2>/dev/null; [ -n \"$BK\" ] && kill $BK 2>/dev/null' INT TERM\nwait $PG\nRUN\nchmod +x start.sh\nchown -R postgres:postgres /mnt/server\necho \"Install complete. Point every Greenhaven world at postgres://${POSTGRES_USER}:<password>@<node-internal-ip>:<this server's port>/${POSTGRES_DB}\"\nexit 0\n",
+            "container": "postgres:16",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Database name",
+            "description": "Database every Greenhaven world shares. Admin-only; changing it after install does nothing (the cluster is already created).",
+            "env_variable": "POSTGRES_DB",
+            "default_value": "game_db",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "string",
+                "regex:/^[a-z_][a-z0-9_]*$/"
+            ],
+            "sort": 1
+        },
+        {
+            "name": "Database user",
+            "description": "Superuser of this cluster and the user the worlds log in as. Admin-only; fixed at install.",
+            "env_variable": "POSTGRES_USER",
+            "default_value": "game_user",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "string",
+                "regex:/^[a-z_][a-z0-9_]*$/"
+            ],
+            "sort": 2
+        },
+        {
+            "name": "Database password",
+            "description": "Set BEFORE the first install; it is baked into the cluster. Use 32+ random characters. The same value goes into each world's RPG_DB URL. Admin-only, secret.",
+            "env_variable": "POSTGRES_PASSWORD",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "string",
+                "min:16"
+            ],
+            "sort": 3
+        },
+        {
+            "name": "Max connections",
+            "description": "Each world server holds a small pool plus one LISTEN connection. 100 covers ~10 worlds with room for psql.",
+            "env_variable": "MAX_CONNECTIONS",
+            "default_value": "100",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "integer",
+                "between:20,1000"
+            ],
+            "sort": 4
+        },
+        {
+            "name": "Shared buffers",
+            "description": "Postgres cache. About a quarter of the RAM you give this server (128MB for a 512MB container).",
+            "env_variable": "SHARED_BUFFERS",
+            "default_value": "128MB",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "string"
+            ],
+            "sort": 5
+        },
+        {
+            "name": "Backup interval (hours)",
+            "description": "pg_dump into backups/ every N hours. 0 disables (do not, this database is the only copy of every save).",
+            "env_variable": "BACKUP_HOURS",
+            "default_value": "6",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "integer",
+                "between:0,168"
+            ],
+            "sort": 6
+        },
+        {
+            "name": "Backups to keep",
+            "description": "Oldest dumps beyond this count are deleted. 28 x 6h = one week.",
+            "env_variable": "BACKUP_KEEP",
+            "default_value": "28",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "integer",
+                "between:1,500"
+            ],
+            "sort": 7
+        }
+    ]
+}
